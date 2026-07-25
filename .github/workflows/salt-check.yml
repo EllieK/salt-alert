@@ -1,0 +1,20 @@
+name: Nightly salt check
+
+on:
+  schedule:
+    # 23:00 UTC = 5 pm Chicago in winter (6 pm during daylight saving)
+    - cron: "0 23 * * *"
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Send a test notification regardless of forecast"
+        type: boolean
+        default: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check forecast and notify
+        run: python check_salt.py ${{ inputs.test && '--test' || '' }}

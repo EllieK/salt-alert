@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Salt Alert ❄️</title>
+<style>
+  :root {
+    --bg: #eef3f8;
+    --card: #ffffff;
+    --text: #1c2733;
+    --muted: #5b6b7b;
+    --accent: #2563eb;
+    --border: #d8e1ea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1720;
+      --card: #1a2530;
+      --text: #e8eef4;
+      --muted: #9db0c0;
+      --accent: #60a5fa;
+      --border: #2b3a48;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 24px 16px 48px;
+  }
+  .wrap { max-width: 560px; margin: 0 auto; }
+  h1 { font-size: 1.7rem; text-align: center; margin-bottom: 4px; }
+  .tagline { text-align: center; color: var(--muted); margin-bottom: 20px; font-size: .95rem; }
+
+  .search-row { display: flex; gap: 8px; margin-bottom: 8px; }
+  .search-row input {
+    flex: 1; padding: 12px 14px; font-size: 1rem;
+    border: 1px solid var(--border); border-radius: 10px;
+    background: var(--card); color: var(--text);
+  }
+  .search-row button, .geo-btn {
+    padding: 12px 16px; font-size: 1rem; border: none; border-radius: 10px;
+    background: var(--accent); color: #fff; cursor: pointer;
+  }
+  .geo-btn {
+    display: block; width: 100%; margin-bottom: 20px;
+    background: transparent; color: var(--accent);
+    border: 1px solid var(--accent);
+  }
+
+  .place { text-align: center; font-weight: 600; margin-bottom: 12px; }
+
+  .verdict {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 16px; padding: 24px; text-align: center; margin-bottom: 16px;
+  }
+  .verdict .emoji { font-size: 3rem; }
+  .verdict h2 { font-size: 1.35rem; margin: 10px 0 6px; }
+  .verdict p { color: var(--muted); font-size: .95rem; line-height: 1.5; }
+  .verdict.salt   { border-color: #16a34a; }
+  .verdict.cold   { border-color: #7c3aed; }
+  .verdict.watch  { border-color: #d97706; }
+
+  .days {
+    display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;
+  }
+  .day {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 10px 4px; text-align: center; font-size: .8rem;
+  }
+  .day .d-name { font-weight: 600; margin-bottom: 4px; }
+  .day .d-emoji { font-size: 1.4rem; margin: 2px 0; }
+  .day .d-temp { color: var(--muted); }
+  .day .d-snow { color: var(--accent); font-weight: 600; min-height: 1.1em; }
+
+  .note {
+    margin-top: 24px; padding: 14px; border-radius: 12px;
+    background: var(--card); border: 1px solid var(--border);
+    color: var(--muted); font-size: .85rem; line-height: 1.5;
+  }
+  .status { text-align: center; color: var(--muted); padding: 20px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Salt Alert ❄️</h1>
+  <p class="tagline">Check each evening: should you put out salt tonight?</p>
+
+  <div class="search-row">
+    <input id="city-input" type="text" placeholder="Type your town, e.g. Green Bay" />
+    <button id="search-btn">Check</button>
+  </div>
+  <button class="geo-btn" id="geo-btn">📍 Use my location</button>
+
+  <div id="status" class="status hidden"></div>
+  <div id="place" class="place hidden"></div>
+  <div id="verdict" class="verdict hidden"></div>
+  <div id="days" class="days hidden"></div>
+
+  <div class="note">
+    <strong>How it decides:</strong> regular rock salt stops working well when it's
+    colder than about 10–15 °F. So this app recommends salt only when snow or freezing
+    rain is coming <em>and</em> it'll be warm enough for salt to actually melt it.
+    If it's colder than that, it suggests sand or a cold-weather deicer instead.
+    Forecast data from Open-Meteo (free).
+  </div>
+
+  <div class="note">
+    <strong>📱 Get automatic phone alerts:</strong> install the free
+    <em>ntfy</em> app (App Store or Google Play), tap <em>+ Subscribe to topic</em>,
+    and enter <code>salt-alert-mckinley-lwvu74</code>.
+    Every evening at 5&nbsp;pm this app checks tomorrow's Chicago forecast and
+    sends a notification if it's a salt night.
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// Remember the last place they searched so it loads automatically next time;
+// first visit defaults to McKinley Park, Chicago
+const saved = localStorage.getItem("saltAlertPlace");
+const home = saved ? JSON.parse(saved)
+                   : { lat: 41.8316, lon: -87.6731, label: "McKinley Park, Chicago" };
+loadForecast(home.lat, home.lon, home.label);
+
+$("search-btn").addEventListener("click", searchCity);
+$("city-input").addEventListener("keydown", e => { if (e.key === "Enter") searchCity(); });
+$("geo-btn").addEventListener("click", () => {
+  showStatus("Getting your location…");
+  navigator.geolocation.getCurrentPosition(
+    pos => loadForecast(pos.coords.latitude, pos.coords.longitude, "Your location"),
+    () => showStatus("Couldn't get your location — try typing your town instead.")
+  );
+});
+
+async function searchCity() {
+  const name = $("city-input").value.trim();
+  if (!name) return;
+  showStatus("Looking up " + name + "…");
+  try {
+    const r = await fetch("https://geocoding-api.open-meteo.com/v1/search?count=1&name=" + encodeURIComponent(name));
+    const data = await r.json();
+    if (!data.results || !data.results.length) {
+      showStatus("Couldn't find that town — try adding the state, like \"Springfield IL\".");
+      return;
+    }
+    const hit = data.results[0];
+    const label = hit.name + (hit.admin1 ? ", " + hit.admin1 : "");
+    loadForecast(hit.latitude, hit.longitude, label);
+  } catch {
+    showStatus("Network problem looking up that town. Are you online?");
+  }
+}
+
+async function loadForecast(lat, lon, label) {
+  showStatus("Checking the forecast…");
+  try {
+    const url = "https://api.open-meteo.com/v1/forecast"
+      + "?latitude=" + lat + "&longitude=" + lon
+      + "&daily=snowfall_sum,temperature_2m_min,temperature_2m_max,weather_code"
+      + "&temperature_unit=fahrenheit&precipitation_unit=inch&timezone=auto&forecast_days=6";
+    const r = await fetch(url);
+    const data = await r.json();
+    localStorage.setItem("saltAlertPlace", JSON.stringify({ lat, lon, label }));
+    render(data.daily, label);
+  } catch {
+    showStatus("Couldn't reach the weather service. Try again in a minute.");
+  }
+}
+
+// Freezing rain / freezing drizzle codes in the WMO weather-code table
+const FREEZING = [56, 57, 66, 67];
+
+// The core decision: given one day's forecast, what should you do?
+function decide(snowIn, lowF, code) {
+  const icyPrecip = snowIn >= 0.1 || FREEZING.includes(code);
+  if (!icyPrecip) return { kind: "none" };
+  if (lowF < 12) return { kind: "cold" };   // salt is nearly useless below ~10-15°F
+  if (lowF > 34) return { kind: "watch" };  // precip, but probably won't stick
+  return { kind: "salt" };
+}
+
+const VERDICTS = {
+  salt: {
+    cls: "salt", emoji: "🧂",
+    title: "Yes — put out salt tonight!",
+    why: (s, l) => `About ${s.toFixed(1)}" of snow expected tomorrow with a low of ${Math.round(l)} °F. Salting before it falls makes shoveling way easier.`
+  },
+  cold: {
+    cls: "cold", emoji: "🥶",
+    title: "Snow is coming, but skip the regular salt",
+    why: (s, l) => `About ${s.toFixed(1)}" expected, but the low is ${Math.round(l)} °F — too cold for rock salt to work. Use sand for grip, or a cold-weather deicer (calcium chloride).`
+  },
+  watch: {
+    cls: "watch", emoji: "🌨️",
+    title: "Some wintry stuff possible, but it likely won't stick",
+    why: (s, l) => `Temperatures should stay above freezing (low ${Math.round(l)} °F), so salt probably isn't needed. Check again tomorrow evening.`
+  },
+  none: {
+    cls: "", emoji: "😌",
+    title: "No salt needed tonight",
+    why: () => "No snow or freezing rain in tomorrow's forecast. Sleep easy."
+  }
+};
+
+function render(daily, label) {
+  $("status").classList.add("hidden");
+  $("place").textContent = "📍 " + label;
+  $("place").classList.remove("hidden");
+
+  // Tomorrow (index 1) is what matters for "should I salt tonight?"
+  const snow = daily.snowfall_sum[1] ?? 0;
+  const low  = daily.temperature_2m_min[1] ?? 32;
+  const code = daily.weather_code[1] ?? 0;
+  const d = decide(snow, low, code);
+  const v = VERDICTS[d.kind];
+
+  const box = $("verdict");
+  box.className = "verdict " + v.cls;
+  box.innerHTML = `<div class="emoji">${v.emoji}</div><h2>${v.title}</h2><p>${v.why(snow, low)}</p>`;
+  box.classList.remove("hidden");
+
+  // 5-day outlook strip (starting tomorrow)
+  const daysBox = $("days");
+  daysBox.innerHTML = "";
+  for (let i = 1; i <= 5 && i < daily.time.length; i++) {
+    const dayName = new Date(daily.time[i] + "T12:00").toLocaleDateString(undefined, { weekday: "short" });
+    const s = daily.snowfall_sum[i] ?? 0;
+    const dd = decide(s, daily.temperature_2m_min[i], daily.weather_code[i]);
+    const em = { salt: "🧂", cold: "🥶", watch: "🌨️", none: "☀️" }[dd.kind];
+    daysBox.innerHTML += `
+      <div class="day">
+        <div class="d-name">${dayName}</div>
+        <div class="d-emoji">${em}</div>
+        <div class="d-temp">${Math.round(daily.temperature_2m_min[i])}–${Math.round(daily.temperature_2m_max[i])}°</div>
+        <div class="d-snow">${s >= 0.1 ? s.toFixed(1) + '"' : ""}</div>
+      </div>`;
+  }
+  daysBox.classList.remove("hidden");
+}
+
+function showStatus(msg) {
+  $("status").textContent = msg;
+  $("status").classList.remove("hidden");
+  $("verdict").classList.add("hidden");
+  $("days").classList.add("hidden");
+  $("place").classList.add("hidden");
+}
+</script>
+</body>
+</html>
