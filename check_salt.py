@@ -8,8 +8,12 @@ Run with --test to force a notification regardless of the forecast.
 """
 
 import json
+import re
 import sys
+import time
 import urllib.request
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 LAT, LON = 41.8316, -87.6731
 PLACE = "McKinley Park"
@@ -48,16 +52,91 @@ def notify(title, message, tags):
     urllib.request.urlopen(req, timeout=30)
 
 
-def main():
-    with urllib.request.urlopen(FORECAST_URL, timeout=30) as r:
-        daily = json.load(r)["daily"]
+UA = {"User-Agent": "salt-alert/1.0 (github.com/EllieK/salt-alert)", "Accept": "application/geo+json, application/json"}
+NWS_GRID = "https://api.weather.gov/gridpoints/LOT/74,71"
+CHI = ZoneInfo("America/Chicago")
 
+
+def get_json(url, attempts=4, timeout=45):
+    """Fetch JSON, retrying a few times (GitHub runners sometimes time out)."""
+    last = None
+    for i in range(attempts):
+        try:
+            req = urllib.request.Request(url, headers=UA)
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.load(r)
+        except Exception as e:  # timeouts, 5xx, connection resets
+            last = e
+            print(f"  attempt {i + 1} failed for {url.split('?')[0]}: {e}")
+            if i < attempts - 1:
+                time.sleep(10 * (i + 1))
+    raise last
+
+
+def from_open_meteo():
+    daily = get_json(FORECAST_URL)["daily"]
     # Index 1 = tomorrow (the run happens the evening before)
-    snow = daily["snowfall_sum"][1] or 0
-    low = daily["temperature_2m_min"][1]
-    code = daily["weather_code"][1]
+    return (daily["snowfall_sum"][1] or 0,
+            daily["temperature_2m_min"][1],
+            daily["weather_code"][1])
+
+
+def _intervals(values):
+    """Yield (start, end, value) from NWS 'validTime' entries like 2026-11-14T06:00:00+00:00/PT3H."""
+    for v in values:
+        start_s, dur = v["validTime"].split("/")
+        start = datetime.fromisoformat(start_s)
+        m = re.fullmatch(r"P(?:(\d+)D)?(?:T(?:(\d+)H)?)?", dur)
+        days, hours = (int(x) if x else 0 for x in m.groups())
+        yield start, start + timedelta(days=days, hours=hours), v["value"]
+
+
+def from_nws():
+    """Backup source: National Weather Service grid forecast for the same spot."""
+    p = get_json(NWS_GRID)["properties"]
+    tomorrow = (datetime.now(CHI) + timedelta(days=1)).date()
+    day_start = datetime.combine(tomorrow, datetime.min.time(), CHI)
+    day_end = day_start + timedelta(days=1)
+
+    snow_mm = 0.0
+    for s, e, val in _intervals(p["snowfallAmount"]["values"]):
+        overlap = (min(e, day_end) - max(s, day_start)).total_seconds()
+        if overlap > 0 and val:
+            snow_mm += val * overlap / (e - s).total_seconds()
+
+    lows = [val for s, e, val in _intervals(p["temperature"]["values"])
+            if s < day_end and e > day_start and val is not None]
+    low_f = min(lows) * 9 / 5 + 32
+
+    code = 0
+    for s, e, val in _intervals(p["weather"]["values"]):
+        if s < day_end and e > day_start:
+            for w in val or []:
+                if w and w.get("weather") in ("freezing_rain", "freezing_drizzle"):
+                    code = 66
+    return snow_mm / 25.4, low_f, code
+
+
+def main():
+    try:
+        snow, low, code = from_open_meteo()
+        source = "Open-Meteo"
+    except Exception as e:
+        print(f"Open-Meteo failed ({e}); trying the National Weather Service")
+        try:
+            snow, low, code = from_nws()
+            source = "NWS"
+        except Exception as e2:
+            print(f"NWS failed too: {e2}")
+            notify(
+                "Salt check couldn't get the forecast",
+                "Both weather services failed tonight. Check the forecast yourself "
+                "in case you need to salt.",
+                "warning",
+            )
+            raise
     verdict = decide(snow, low, code)
-    print(f"Tomorrow: snow={snow:.1f}in low={low:.0f}F code={code} -> {verdict}")
+    print(f"Tomorrow ({source}): snow={snow:.1f}in low={low:.0f}F code={code} -> {verdict}")
 
     if "--test" in sys.argv:
         notify(
